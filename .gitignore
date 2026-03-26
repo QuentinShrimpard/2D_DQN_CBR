@@ -129,3 +129,10 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+
+
+
+LisezMoi.txt
+logs_csv/
+checkpoints/

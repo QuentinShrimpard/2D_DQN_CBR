@@ -1,8 +1,6 @@
-import random
 from typing import Callable
 
 import gymnasium as gym
-import numpy as np
 import torch
 
 
@@ -14,23 +12,19 @@ def evaluate(
     run_name: str,
     Model: torch.nn.Module,
     device: torch.device = torch.device("cpu"),
-    epsilon: float = 0.05,
     capture_video: bool = True,
+    gamma: float = 0.99,
 ):
-    envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, 0, capture_video, run_name)])
-    model = Model(envs).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=False))
-    model.eval()
+    envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, capture_video, run_name, gamma)])
+    agent = Model(envs).to(device)
+    agent.load_state_dict(torch.load(model_path, map_location=device))
+    agent.eval()
 
     obs, _ = envs.reset()
     episodic_returns = []
     while len(episodic_returns) < eval_episodes:
-        if random.random() < epsilon:
-            actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
-        else:
-            q_values = model(torch.Tensor(obs).to(device))
-            actions = torch.argmax(q_values, dim=1).cpu().numpy()
-        next_obs, _, _, _, infos = envs.step(actions)
+        actions, _, _, _ = agent.get_action_and_value(torch.Tensor(obs).to(device))
+        next_obs, _, _, _, infos = envs.step(actions.cpu().numpy())
         if "final_info" in infos:
             for info in infos["final_info"]:
                 if "episode" not in info:
@@ -45,16 +39,18 @@ def evaluate(
 if __name__ == "__main__":
     from huggingface_hub import hf_hub_download
 
-    from cleanrl.dqn import QNetwork, make_env
+    from cleanrl.ppo_continuous_action import Agent, make_env
 
-    model_path = hf_hub_download(repo_id="cleanrl/CartPole-v1-dqn-seed1", filename="q_network.pth")
+    model_path = hf_hub_download(
+        repo_id="sdpkjc/Hopper-v4-ppo_continuous_action-seed1", filename="ppo_continuous_action.cleanrl_model"
+    )
     evaluate(
         model_path,
         make_env,
-        "CartPole-v1",
+        "Hopper-v4",
         eval_episodes=10,
         run_name=f"eval",
-        Model=QNetwork,
+        Model=Agent,
         device="cpu",
         capture_video=False,
     )
