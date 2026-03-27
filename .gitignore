@@ -136,3 +136,4 @@ venv.bak/
 LisezMoi.txt
 logs_csv/
 checkpoints/
+./vscode/
