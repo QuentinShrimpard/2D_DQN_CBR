@@ -1,68 +1,90 @@
-# Turtlebot MiniGrid (2D, obstacles statiques) avec CleanRL
+# Turtlebot MiniGrid with CleanRL
 
-Ce mini-framework ajoute un environnement Gymnasium de type *minigrid* pour un robot style Turtlebot et permet de lancer facilement les algorithmes CleanRL dessus.
+This mini-framework adds a minigrid-style Gymnasium environment for a robot and allows for easy execution of CleanRL scripts on it.
 
-## Fichiers ajoutés
+## Useful Files
 
-- `cleanrl/turtlebot_minigrid_env.py` : environnement 2D (grille, orientation, obstacles statiques)
-- `cleanrl/run_cleanrl_turtlebot.py` : lanceur générique pour exécuter un script CleanRL sur cet env
-- `cleanrl/eval_turtlebot_dqn.py` : évaluation d'un modèle DQN sauvegardé
+- `cleanrl/turtlebot_minigrid_env.py`: 2D environment (grid, orientation, static and dynamic obstacles).
+- `cleanrl/run_cleanrl_turtlebot.py`: Generic launcher to execute a CleanRL script on this environment.
+- `cleanrl/eval_turtlebot_dqn.py`: Evaluation of a saved `dqn.py` model (`.cleanrl_model`).
+- `cleanrl/eval_turtlebot_cbr.py`: Evaluation of a saved `dqn_cbr.py` model (`.pth`).
 
-## Espace d'état et actions
+## Registered Environments
 
-- **Actions discrètes** (`Discrete(3)`) :
-  - `0` tourner à gauche
-  - `1` tourner à droite
-  - `2` avancer
-- **Observation** (`Box`) :
-  - grille aplatie (obstacles, robot, objectif)
-  - état compact 
-    - position robot `(x, y)` normalisée
-    - position objectif `(x, y)` normalisée
-    - orientation one-hot (N/E/S/O)
+Importing `turtlebot_minigrid_env` automatically registers two Gymnasium IDs:
 
-## Récompenses
+- `TurtlebotMiniGrid-StaticObstacles-v0`
+- `TurtlebotMiniGrid-DynamicObstacles-v0`
 
-- pénalité de pas (`-0.01`)
-- pénalité collision (`-0.10` en plus)
-- bonus de progression vers l'objectif (shaping Manhattan)
-- récompense d'objectif (`+1.0`) et fin d'épisode
+The dynamic version uses moving obstacles (`num_moving_obstacles=5`, `moving_obstacle_freq=3`).
 
-## Lancer DQN (recommandé)
+## State and Action Space
 
-Depuis la racine du dépôt `cleanrl` :
+- **Discrete Actions** (`Discrete(3)`):
+  - `0`: turn left
+  - `1`: turn right
+  - `2`: move forward
+- **Observation** (`Box` of size `grid_size * grid_size + 8`):
+  - flattened grid (static obstacles, moving obstacles, robot, goal)
+  - visibility masking around the robot (`VISIBILITY_RADIUS = 7`)
+  - compact state:
+    - normalized robot position `(x, y)`
+    - normalized goal position `(x, y)`
+    - one-hot orientation (N/E/S/W)
 
-```bash
-python cleanrl/run_cleanrl_turtlebot.py \
-  --algo dqn_cbr.py \
-  --total-timesteps 200000 \
-  --learning-starts 1000 \
-  --buffer-size 50000 \
-  --batch-size 128 \
-  --save-model
-```
+## Rewards
 
-> `--env-id` est injecté automatiquement (`TurtlebotMiniGrid-StaticObstacles-v0`) si tu ne le fournis pas.
+In the current implementation (`TurtlebotMiniGridEnv.__init__`):
 
-## Évaluer un modèle DQN
+- step penalty: `-0.01`
+- collision penalty: `-0.55`
+- progress bonus: `+0.01 * (distance_old - distance_new)`
+- goal reward: `+1.2` and episode termination
 
-```bash
-python cleanrl/eval_turtlebot_dqn.py \
-  --model-path runs/<run_name>/dqn.cleanrl_model \
-  --eval-episodes 20 \
-  --capture-video
-```
+## Run a DQN training
 
-## Lancer un autre algo CleanRL
-
-Exemple PPO (si le script supporte `--env-id` et action discrète) :
+From the root of the repository:
 
 ```bash
-python cleanrl/run_cleanrl_turtlebot.py --algo ppo.py --total-timesteps 200000
+
+python cleanrl/run_cleanrl_turtlebot.py --algo dqn.py --total-timesteps 200000 --learning-starts 1000 --buffer-size 50000 --batch-size 128 --save-model
+
 ```
+
+By default, the launcher injects `--env-id TurtlebotMiniGrid-StaticObstacles-v0` if none is provided
+
+
+## Run a D2CBRL training
+
+```bash
+
+python cleanrl/run_cleanrl_turtlebot.py --algo dqn_cbr.py --env-id TurtlebotMiniGrid-DynamicObstacles-v0
+
+```
+
+
+## Evaluate a DQN model (`dqn.py`)
+
+```bash
+
+python cleanrl/eval_turtlebot_dqn.py --model-path runs/<run_name>/dqn.cleanrl_model --eval-episodes 20 --capture-video
+
+```
+
+
+## Evaluate a D2CBRL model (`dqn_cbr.py`)
+
+```bash
+
+python cleanrl/eval_turtlebot_cbr.py --model-path checkpoints/<exp>/model.pth --eval-episodes 20 --render
+
+```
+
 
 ## Notes
 
-- L'environnement est enregistré à l'import sous l'id : `TurtlebotMiniGrid-StaticObstacles-v0`.
-- Le rendu vidéo fonctionne avec `render_mode="rgb_array"` (utile pour `--capture-video`).
-- Le cas d'usage principal ici est DQN.
+- Video rendering works with `render_mode="rgb_array"` (useful for`--capture-video`).
+
+- Interactive rendering is available with `--render` (Pygame window).
+
+- We removed the other cleanRL scripts but they should work on our framework if they accept `--env-id` and a discrete action space.

@@ -155,7 +155,7 @@ if __name__ == "__main__":
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
-    # TRY NOT TO MODIFY: seeding
+    # seeding
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -187,10 +187,10 @@ if __name__ == "__main__":
     hist_success = []
     hist_losses = []
 
-    # TRY NOT TO MODIFY: start the game
+    # start the game
     obs, _ = envs.reset(seed=args.seed)
     for global_step in range(args.total_timesteps):
-        # ALGO LOGIC: put action logic here
+        # put action logic here
         epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, global_step)
         if random.random() < epsilon:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
@@ -198,20 +198,22 @@ if __name__ == "__main__":
             q_values = q_network(torch.Tensor(obs).to(device))
             actions = torch.argmax(q_values, dim=1).cpu().numpy()
 
-        # TRY NOT TO MODIFY: execute the game and log data.
+        # execute the game and log data.
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
-        # TRY NOT TO MODIFY: record rewards for plotting purposes
-        if "final_info" in infos:
-            for info in infos["final_info"]:
-                if info and isinstance(info, dict) and "episode" in info:
-                    print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                    writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                    writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                    hist_returns.append(info["episode"]["r"])
-                    hist_success.append(1 if info["episode"]["r"] > 0 else 0)
+        # record rewards for plotting purposes
+        if "episode" in infos and "_episode" in infos:
+            for i, done_ in enumerate(infos["_episode"]):
+                if done_:
+                    ep_r = infos["episode"]["r"][i].item()
+                    ep_l = infos["episode"]["l"][i].item()
+                    print(f"global_step={global_step}, episodic_return={ep_r}")
+                    writer.add_scalar("charts/episodic_return", ep_r, global_step)
+                    writer.add_scalar("charts/episodic_length", ep_l, global_step)
+                    hist_returns.append(ep_r)
+                    hist_success.append(1 if ep_r > 0 else 0)
 
-        # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
+        # save data to reply buffer; handle `final_observation`
         real_next_obs = next_obs.copy()
         
         # Debugging step: print keys if error is imminent
@@ -224,14 +226,12 @@ if __name__ == "__main__":
                 real_next_obs[idx] = infos["final_observation"][idx]
         rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
 
-        # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
 
         if args.render:
             envs.render()
             time.sleep(1.0 / 120)  # match render_fps=64
 
-        # ALGO LOGIC: training.
         if global_step > args.learning_starts:
             if global_step % args.train_frequency == 0:
                 data = rb.sample(args.batch_size)
@@ -260,10 +260,35 @@ if __name__ == "__main__":
                         args.tau * q_network_param.data + (1.0 - args.tau) * target_network_param.data
                     )
 
+    # plot stats
+    plt.figure(figsize=(10, 15))
+    plt.subplot(3, 1, 1)
+    if len(hist_returns) > 0:
+        w_ret = min(100, len(hist_returns))
+        plt.plot(np.convolve(np.array(hist_returns).flatten(), np.ones(w_ret)/w_ret, mode='valid'))
+    plt.ylabel('Return')
+
+    plt.subplot(3, 1, 2)
+    if len(hist_success) > 0:
+        w_suc = min(100, len(hist_success))
+        plt.plot(np.convolve(np.array(hist_success).flatten(), np.ones(w_suc)/w_suc, mode='valid'))
+    plt.ylabel('Success')
+
+    plt.subplot(3, 1, 3)
+    if len(hist_losses) > 0:
+        w_loss = min(1000, len(hist_losses))
+        plt.plot(np.convolve(np.array(hist_losses).flatten(), np.ones(w_loss)/w_loss, mode='valid'))
+    plt.ylabel('Loss')
+
+    plt.tight_layout()
+    plt.savefig(f"runs/{run_name}/training_stats.png")
+    plt.close()
+
     if args.save_model:
         model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
         torch.save(q_network.state_dict(), model_path)
         print(f"model saved to {model_path}")
+        import sys; sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from cleanrl_utils.evals.dqn_eval import evaluate
 
         episodic_returns = evaluate(
@@ -285,23 +310,6 @@ if __name__ == "__main__":
             repo_name = f"{args.env_id}-{args.exp_name}-seed{args.seed}"
             repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
             push_to_hub(args, episodic_returns, repo_id, "DQN", f"runs/{run_name}", f"videos/{run_name}-eval")
-
-    fig, axs = plt.subplots(3, 1, figsize=(10, 15))
-    if len(hist_returns) > 0:
-        w_ret = min(100, len(hist_returns))
-        axs[0].plot(np.convolve(hist_returns, np.ones(w_ret)/w_ret, mode='valid'))
-    axs[0].set_ylabel('Return')
-    if len(hist_success) > 0:
-        w_suc = min(100, len(hist_success))
-        axs[1].plot(np.convolve(hist_success, np.ones(w_suc)/w_suc, mode='valid'))
-    axs[1].set_ylabel('Success')
-    if len(hist_losses) > 0:
-        w_loss = min(1000, len(hist_losses))
-        axs[2].plot(np.convolve(hist_losses, np.ones(w_loss)/w_loss, mode='valid'))
-    axs[2].set_ylabel('Loss')
-    plt.tight_layout()
-    plt.savefig(f'runs/{run_name}/training_stats.png')
-    plt.close()
 
     envs.close()
     writer.close()
