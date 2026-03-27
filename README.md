@@ -16,7 +16,7 @@ Importing `turtlebot_minigrid_env` automatically registers two Gymnasium IDs:
 - `TurtlebotMiniGrid-StaticObstacles-v0`
 - `TurtlebotMiniGrid-DynamicObstacles-v0`
 
-The dynamic version uses moving obstacles (`num_moving_obstacles=5`, `moving_obstacle_freq=3`).
+The dynamic version uses moving obstacles (`num_moving_obstacles=3`, `moving_obstacle_freq=3`).
 
 ## State and Action Space
 
