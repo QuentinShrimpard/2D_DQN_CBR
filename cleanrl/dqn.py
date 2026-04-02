@@ -11,10 +11,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import tyro
+import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 
-from cleanrl_utils.buffers import ReplayBuffer
-
+# from cleanrl_utils.buffers import ReplayBuffer
+from buffers import ReplayBuffer
 
 @dataclass
 class Args:
@@ -34,7 +35,9 @@ class Args:
     """the entity (team) of wandb's project"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
-    save_model: bool = False
+    render: bool = False
+    """if toggled, render the environment in a window during training"""
+    save_model: bool = True
     """whether to save model into the `runs/{run_name}` folder"""
     upload_model: bool = False
     """whether to upload the saved model to huggingface"""
@@ -44,7 +47,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 500000
+    total_timesteps: int = 500000 * 3 # FLAG
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
@@ -72,14 +75,36 @@ class Args:
     """the frequency of training"""
 
 
-def make_env(env_id, seed, idx, capture_video, run_name):
+def make_env(env_id, seed, idx, capture_video, run_name, render=False):
     def thunk():
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array")
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+        elif render and idx == 0:
+            env = gym.make(env_id, render_mode="human")
         else:
             env = gym.make(env_id)
         env = gym.wrappers.RecordEpisodeStatistics(env)
+
+        # Custom AutoResetWrapper to ensure final_observation is present
+        class CustomAutoResetWrapper(gym.Wrapper):
+            def step(self, action):
+                obs, reward, terminated, truncated, info = self.env.step(action)
+                if terminated or truncated:
+                    new_obs, new_info = self.env.reset()
+                    # Ensure final_observation is present in info
+                    if "final_observation" not in info:
+                        info["final_observation"] = obs
+                    if "final_info" not in info:
+                        info["final_info"] = info.copy()
+                    
+                    obs = new_obs
+                    # Merge new_info into info, but ensure final_observation is preserved
+                    # Usually reset info is minimal, so updating is fine.
+                    info.update(new_info)
+                return obs, reward, terminated, truncated, info
+        
+        env = CustomAutoResetWrapper(env)
         env.action_space.seed(seed)
 
         return env
@@ -130,7 +155,7 @@ if __name__ == "__main__":
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
-    # TRY NOT TO MODIFY: seeding
+    # seeding
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -140,7 +165,7 @@ if __name__ == "__main__":
 
     # env setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name) for i in range(args.num_envs)]
+        [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name, args.render) for i in range(args.num_envs)]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
@@ -158,10 +183,14 @@ if __name__ == "__main__":
     )
     start_time = time.time()
 
-    # TRY NOT TO MODIFY: start the game
+    hist_returns = []
+    hist_success = []
+    hist_losses = []
+
+    # start the game
     obs, _ = envs.reset(seed=args.seed)
     for global_step in range(args.total_timesteps):
-        # ALGO LOGIC: put action logic here
+        # put action logic here
         epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, global_step)
         if random.random() < epsilon:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
@@ -169,28 +198,40 @@ if __name__ == "__main__":
             q_values = q_network(torch.Tensor(obs).to(device))
             actions = torch.argmax(q_values, dim=1).cpu().numpy()
 
-        # TRY NOT TO MODIFY: execute the game and log data.
+        # execute the game and log data.
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
-        # TRY NOT TO MODIFY: record rewards for plotting purposes
-        if "final_info" in infos:
-            for info in infos["final_info"]:
-                if info and "episode" in info:
-                    print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                    writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                    writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+        # record rewards for plotting purposes
+        if "episode" in infos and "_episode" in infos:
+            for i, done_ in enumerate(infos["_episode"]):
+                if done_:
+                    ep_r = infos["episode"]["r"][i].item()
+                    ep_l = infos["episode"]["l"][i].item()
+                    print(f"global_step={global_step}, episodic_return={ep_r}")
+                    writer.add_scalar("charts/episodic_return", ep_r, global_step)
+                    writer.add_scalar("charts/episodic_length", ep_l, global_step)
+                    hist_returns.append(ep_r)
+                    hist_success.append(1 if ep_r > 0 else 0)
 
-        # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
+        # save data to reply buffer; handle `final_observation`
         real_next_obs = next_obs.copy()
+        
+        # Debugging step: print keys if error is imminent
+        if any(truncations) and "final_observation" not in infos:
+            print(f"DEBUG: truncations={truncations}")
+            print(f"DEBUG: infos keys={infos.keys()}")
+
         for idx, trunc in enumerate(truncations):
             if trunc:
                 real_next_obs[idx] = infos["final_observation"][idx]
         rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
 
-        # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
 
-        # ALGO LOGIC: training.
+        if args.render:
+            envs.render()
+            time.sleep(1.0 / 120)  # match render_fps=64
+
         if global_step > args.learning_starts:
             if global_step % args.train_frequency == 0:
                 data = rb.sample(args.batch_size)
@@ -199,8 +240,9 @@ if __name__ == "__main__":
                     td_target = data.rewards.flatten() + args.gamma * target_max * (1 - data.dones.flatten())
                 old_val = q_network(data.observations).gather(1, data.actions).squeeze()
                 loss = F.mse_loss(td_target, old_val)
+                hist_losses.append(loss.item())
 
-                if global_step % 100 == 0:
+                if global_step % 10000 == 0:
                     writer.add_scalar("losses/td_loss", loss, global_step)
                     writer.add_scalar("losses/q_values", old_val.mean().item(), global_step)
                     print("SPS:", int(global_step / (time.time() - start_time)))
@@ -218,10 +260,35 @@ if __name__ == "__main__":
                         args.tau * q_network_param.data + (1.0 - args.tau) * target_network_param.data
                     )
 
+    # plot stats
+    plt.figure(figsize=(10, 15))
+    plt.subplot(3, 1, 1)
+    if len(hist_returns) > 0:
+        w_ret = min(100, len(hist_returns))
+        plt.plot(np.convolve(np.array(hist_returns).flatten(), np.ones(w_ret)/w_ret, mode='valid'))
+    plt.ylabel('Return')
+
+    plt.subplot(3, 1, 2)
+    if len(hist_success) > 0:
+        w_suc = min(100, len(hist_success))
+        plt.plot(np.convolve(np.array(hist_success).flatten(), np.ones(w_suc)/w_suc, mode='valid'))
+    plt.ylabel('Success')
+
+    plt.subplot(3, 1, 3)
+    if len(hist_losses) > 0:
+        w_loss = min(1000, len(hist_losses))
+        plt.plot(np.convolve(np.array(hist_losses).flatten(), np.ones(w_loss)/w_loss, mode='valid'))
+    plt.ylabel('Loss')
+
+    plt.tight_layout()
+    plt.savefig(f"runs/{run_name}/training_stats.png")
+    plt.close()
+
     if args.save_model:
         model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
         torch.save(q_network.state_dict(), model_path)
         print(f"model saved to {model_path}")
+        import sys; sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from cleanrl_utils.evals.dqn_eval import evaluate
 
         episodic_returns = evaluate(

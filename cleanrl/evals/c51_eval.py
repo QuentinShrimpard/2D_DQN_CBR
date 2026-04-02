@@ -1,4 +1,5 @@
 import random
+from argparse import Namespace
 from typing import Callable
 
 import gymnasium as gym
@@ -18,8 +19,11 @@ def evaluate(
     capture_video: bool = True,
 ):
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, 0, capture_video, run_name)])
-    model = Model(envs).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=False))
+    model_data = torch.load(model_path, map_location="cpu")
+    args = Namespace(**model_data["args"])
+    model = Model(envs, n_atoms=args.n_atoms, v_min=args.v_min, v_max=args.v_max)
+    model.load_state_dict(model_data["model_weights"])
+    model = model.to(device)
     model.eval()
 
     obs, _ = envs.reset()
@@ -28,8 +32,8 @@ def evaluate(
         if random.random() < epsilon:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
         else:
-            q_values = model(torch.Tensor(obs).to(device))
-            actions = torch.argmax(q_values, dim=1).cpu().numpy()
+            actions, _ = model.get_action(torch.Tensor(obs).to(device))
+            actions = actions.cpu().numpy()
         next_obs, _, _, _, infos = envs.step(actions)
         if "final_info" in infos:
             for info in infos["final_info"]:
@@ -45,9 +49,9 @@ def evaluate(
 if __name__ == "__main__":
     from huggingface_hub import hf_hub_download
 
-    from cleanrl.dqn import QNetwork, make_env
+    from cleanrl.c51 import QNetwork, make_env
 
-    model_path = hf_hub_download(repo_id="cleanrl/CartPole-v1-dqn-seed1", filename="q_network.pth")
+    model_path = hf_hub_download(repo_id="cleanrl/CartPole-v1-c51-seed1", filename="c51.cleanrl_model")
     evaluate(
         model_path,
         make_env,

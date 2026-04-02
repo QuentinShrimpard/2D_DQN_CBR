@@ -1,9 +1,13 @@
 import random
+from argparse import Namespace
 from typing import Callable
 
+import flax
+import flax.linen as nn
 import gymnasium as gym
+import jax
+import jax.numpy as jnp
 import numpy as np
-import torch
 
 
 def evaluate(
@@ -12,24 +16,32 @@ def evaluate(
     env_id: str,
     eval_episodes: int,
     run_name: str,
-    Model: torch.nn.Module,
-    device: torch.device = torch.device("cpu"),
+    Model: nn.Module,
     epsilon: float = 0.05,
     capture_video: bool = True,
+    seed=1,
 ):
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, 0, capture_video, run_name)])
-    model = Model(envs).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device, weights_only=False))
-    model.eval()
-
     obs, _ = envs.reset()
+    model_data = None
+    with open(model_path, "rb") as f:
+        model_data = flax.serialization.from_bytes(model_data, f.read())
+    args = Namespace(**model_data["args"])
+    model = Model(action_dim=envs.single_action_space.n, n_atoms=args.n_atoms)
+    # q_key = jax.random.PRNGKey(seed)
+    params = model_data["model_weights"]
+    model.apply = jax.jit(model.apply)
+    atoms = jnp.asarray(np.linspace(args.v_min, args.v_max, num=args.n_atoms))
+
     episodic_returns = []
     while len(episodic_returns) < eval_episodes:
         if random.random() < epsilon:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
         else:
-            q_values = model(torch.Tensor(obs).to(device))
-            actions = torch.argmax(q_values, dim=1).cpu().numpy()
+            pmfs = model.apply(params, obs)
+            q_vals = (pmfs * atoms).sum(axis=-1)
+            actions = q_vals.argmax(axis=-1)
+            actions = jax.device_get(actions)
         next_obs, _, _, _, infos = envs.step(actions)
         if "final_info" in infos:
             for info in infos["final_info"]:
@@ -45,9 +57,9 @@ def evaluate(
 if __name__ == "__main__":
     from huggingface_hub import hf_hub_download
 
-    from cleanrl.dqn import QNetwork, make_env
+    from cleanrl.c51_jax import QNetwork, make_env
 
-    model_path = hf_hub_download(repo_id="cleanrl/CartPole-v1-dqn-seed1", filename="q_network.pth")
+    model_path = hf_hub_download(repo_id="cleanrl/CartPole-v1-c51_jax-seed1", filename="c51_jax.cleanrl_model")
     evaluate(
         model_path,
         make_env,
@@ -55,6 +67,5 @@ if __name__ == "__main__":
         eval_episodes=10,
         run_name=f"eval",
         Model=QNetwork,
-        device="cpu",
         capture_video=False,
     )
